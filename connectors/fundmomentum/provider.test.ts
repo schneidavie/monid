@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { testBundle } from "@shared/testing";
 
-Deno.test("fundmomentum: 4 endpoints share one auth fn, one lifecycle.start, one credit pool", async () => {
+Deno.test("fundmomentum: 6 endpoints share one auth fn, one lifecycle.start, one credit pool", async () => {
     const bundle = await testBundle();
     const ids = Object.keys(bundle.endpoints).filter((id) =>
         id.startsWith("fundmomentum#")
@@ -10,7 +10,9 @@ Deno.test("fundmomentum: 4 endpoints share one auth fn, one lifecycle.start, one
         "fundmomentum#mcp/check_lp_coverage",
         "fundmomentum#mcp/get_changes",
         "fundmomentum#mcp/get_fund",
+        "fundmomentum#mcp/get_usage",
         "fundmomentum#mcp/search_funds",
+        "fundmomentum#mcp/send_feedback",
     ]);
 
     const docs = ids.map((id) => bundle.endpoints[id]);
@@ -37,6 +39,9 @@ Deno.test("fundmomentum: 4 endpoints share one auth fn, one lifecycle.start, one
         "fundmomentum#mcp/check_lp_coverage": "FREE",
         "fundmomentum#mcp/get_changes": "PER_CALL",
         "fundmomentum#mcp/get_fund": "PER_CALL",
+        // Added 2026-10-24, both FREE like check_lp_coverage.
+        "fundmomentum#mcp/get_usage": "FREE",
+        "fundmomentum#mcp/send_feedback": "FREE",
         // Re-verified live 2026-10-17: billed per fund returned (1
         // credit each, minimum 1), not a flat per-call price — see
         // search-funds/endpoint.ts.

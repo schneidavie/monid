@@ -54,13 +54,18 @@ import { z } from "zod";
  * any endpoint whose own model is FREE, so its zero usage is never
  * second-guessed by an absent claim.
  *
- * SCOPE (v1, unchanged): the four tools servable without a
- * payment-protocol integration or a second entitlement — `search_funds`,
- * `get_fund`, `get_changes`, `check_lp_coverage`. The three Pro signal
- * tools (`get_fund_signals`, `get_gp_profile`, `match_startup`) and
+ * SCOPE (v1 + 2026-10-24 addition): the four original tools servable
+ * without a payment-protocol integration or a second entitlement —
+ * `search_funds`, `get_fund`, `get_changes`, `check_lp_coverage` — plus
+ * two more vendor-side tools added 2026-10-24, `get_usage` and
+ * `send_feedback`, both FREE like `check_lp_coverage` (no arguments or
+ * credentials entitlement issue, so they slot in the same way: `usage.
+ * consolidate` above already skips any FREE-model endpoint, no change
+ * needed there for the two new ones). The three Pro signal tools
+ * (`get_fund_signals`, `get_gp_profile`, `match_startup`) and
  * `search_lps` (sold only on a separate LP Radar subscription, never
- * per call, on credits, or over MPP) are a deliberate follow-up once
- * pricing/entitlement posture for those is settled.
+ * per call, on credits, or over MPP) are still a deliberate follow-up
+ * once pricing/entitlement posture for those is settled.
  */
 export default defineProvider({
     name: "fundmomentum",
@@ -78,9 +83,12 @@ export default defineProvider({
             "instead of re-searching; and check LP coverage by country " +
             "and LP type across 700+ disclosed limited partners " +
             "(counts only — no name or website without an LP Radar " +
-            "subscription, not sold through this connector). Every " +
-            "fund profile is primary research (GP blog posts, fund " +
-            "sites, published interviews), not a scraped summary.",
+            "subscription, not sold through this connector). Two more " +
+            "tools are always free and never draw a credit: check your " +
+            "own usage before a batch of calls, and send short " +
+            "feedback on a tool or the data. Every fund profile is " +
+            "primary research (GP blog posts, fund sites, published " +
+            "interviews), not a scraped summary.",
         homepageUrl: "https://fundmomentum.vc",
         docsUrl: "https://fundmomentum.vc/mcp",
         categories: ["funding-data"],

@@ -23,6 +23,18 @@ import { zFundmomentumSearchFundsArgs } from "./schema/inputs.ts";
  * authoritative over the fold (e.g. the one free tracer row mixed into
  * an unpaid caller's response, which is real data but not itself
  * billed).
+ *
+ * RE-VERIFIED LIVE AGAIN 2026-10-24/25, after the vendor's own "safe
+ * default limit" fix: omitting `limit` now defaults to 10 for every
+ * caller (including on credits), where it used to return every match
+ * within the day's allowance — see schema/inputs.ts for the full
+ * before/after. `estimate` below already assumed a default of 10, so
+ * it needed no change; only the input schema's description was stale.
+ * Also newly documented: an agent-credits key is capped at 150 funds
+ * per key per UTC day IN TOTAL across calls, on top of the existing
+ * per-call ceilings (free/keyless 10, Starter 50, Pro 250 with
+ * `offset` paging) — this is a vendor-side quota this connector does
+ * not pre-enforce, same posture as every other tier ceiling here.
  */
 export default defineEndpoint({
     meta: {
@@ -46,6 +58,9 @@ export default defineEndpoint({
             "Billed per fund returned, 1 credit (€0.01) each, minimum " +
             "1 — not a flat per-call price. An empty result still " +
             "costs the floor.",
+            "`limit` defaults to 10 if omitted, for every caller " +
+            "(changed 2026-10-24). Agent-credits callers are also " +
+            "capped at 150 funds per key per UTC day in total.",
         ],
     },
     endpoint: "/mcp/search_funds",
