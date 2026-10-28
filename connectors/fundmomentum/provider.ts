@@ -54,6 +54,27 @@ import { z } from "zod";
  * any endpoint whose own model is FREE, so its zero usage is never
  * second-guessed by an absent claim.
  *
+ * RE-VERIFIED LIVE 2026-10-28, against the vendor's v1.9.0 release
+ * (fresh self-registered agent key, real calls — see search-funds/
+ * endpoint.ts for the full story). Two things change here:
+ *   - `search_funds` now ALSO carries its billing receipt as a
+ *     documented, public field in the payload itself — `billing.
+ *     credits_charged` — alongside the pre-existing undocumented
+ *     `_meta.credits_charged` read below. Live-verified twice that
+ *     the two are always equal for this tool, so `lifecycle.start`
+ *     now prefers the documented field when the parsed payload
+ *     carries one, and falls back to the `_meta` reading for every
+ *     other tool (none of which have a `billing` block as of this
+ *     release).
+ *   - An exact repeat of a prior call's arguments comes back from an
+ *     idempotency cache for free — `_meta.idempotent_replay: true`,
+ *     with the ORIGINAL call's now-stale credits_charged/billing
+ *     numbers echoed back verbatim, not the vendor actually charging
+ *     again. Found live, unrelated to v1.9.0. `lifecycle.start` now
+ *     zeroes the usage claim whenever this flag is set, so a
+ *     replayed call is never double-counted against the engine's own
+ *     ledger on top of the vendor's own "nothing charged" guarantee.
+ *
  * SCOPE (v1 + 2026-10-24 addition): the four original tools servable
  * without a payment-protocol integration or a second entitlement —
  * `search_funds`, `get_fund`, `get_changes`, `check_lp_coverage` — plus
@@ -99,6 +120,14 @@ export default defineProvider({
     lifecycle: {
         state: z.strictObject({
             creditsCharged: z.number().nonnegative().optional(),
+            // v1.9.0, carried for search-funds/endpoint.ts's usage.evidence
+            // (see the lifecycle.start comment below): true only on an
+            // idempotent-replay response, so that endpoint's evidence fold
+            // can zero its own count too — a nonzero derived fold is what
+            // the engine falls back to once a zeroed consolidate claim gets
+            // pruned, so zeroing creditsCharged alone is not enough on its
+            // own to land at zero total usage.
+            idempotentReplay: z.boolean().optional(),
         }),
         start: async ({ utils }) => {
             const res = await utils.request();
@@ -139,6 +168,14 @@ export default defineProvider({
                 res.body,
                 "$.result._meta.credits_charged",
             );
+            // Found live 2026-10-28, unrelated to v1.9.0: `_meta.
+            // idempotent_replay` marks a cached-and-free repeat of an
+            // identical prior call (see the effectiveCreditsCharged
+            // comment below for why this needs to be read now).
+            const idempotentReplay = utils.json.optionalGet(
+                res.body,
+                "$.result._meta.idempotent_replay",
+            ) === true;
             const text = utils.json.optionalGet(
                 res.body,
                 "$.result.content[0].text",
@@ -146,12 +183,47 @@ export default defineProvider({
             const parsed = typeof text === "string"
                 ? JSON.parse(text)
                 : res.body;
+            // v1.9.0 added `billing.credits_charged` inside the parsed
+            // payload itself — the vendor's now-documented public
+            // receipt (search_funds only, so far). Prefer it over the
+            // undocumented `_meta` reading above when present; they're
+            // live-verified to always agree when both exist.
+            const billingCreditsCharged = utils.json.optionalNum(
+                parsed,
+                "$.billing.credits_charged",
+            );
+            const effectiveCreditsCharged = idempotentReplay
+                // Found live, unrelated to v1.9.0: a repeated call is
+                // served from cache with the ORIGINAL call's stale
+                // credits_charged echoed back, but the vendor charged
+                // nothing this time — never claim usage for it. (This
+                // alone only gets consolidate's own claim to zero, which
+                // the engine then PRUNES and falls back to the derived
+                // fold over the real results — still carrying the flag
+                // into state below is what lets an endpoint's own
+                // usage.evidence zero that fold too; search-funds/
+                // endpoint.ts does.)
+                ? 0
+                : billingCreditsCharged ?? creditsCharged;
             return {
                 kind: "COMPLETED",
                 httpStatus: res.status,
                 output: parsed,
-                ...(creditsCharged !== undefined
-                    ? { state: { data: { creditsCharged } } }
+                ...(effectiveCreditsCharged !== undefined || idempotentReplay
+                    ? {
+                        state: {
+                            data: {
+                                ...(effectiveCreditsCharged !== undefined
+                                    ? {
+                                        creditsCharged: effectiveCreditsCharged,
+                                    }
+                                    : {}),
+                                ...(idempotentReplay
+                                    ? { idempotentReplay: true }
+                                    : {}),
+                            },
+                        },
+                    }
                     : {}),
             };
         },

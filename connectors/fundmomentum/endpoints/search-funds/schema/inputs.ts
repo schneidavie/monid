@@ -2,13 +2,13 @@ import { z } from "zod";
 
 /**
  * `search_funds` tool arguments (fundmomentum.vc, RE-VERIFIED LIVE
- * 2026-10-24/25 against the vendor's own tool schema — see provider.ts
- * for the earlier 2026-10-17 billing correction). Mirror carries
- * optionality only (D25): the vendor normalizes common spellings of
- * `stage`/`industry` server-side ("Pre-Seed" → `pre_seed`, "AI/ML" →
- * `ai_ml`), so this stays a plain string rather than a fabricated closed
- * enum — the real enum is not published. `country` is spelled out in
- * full here (not an ISO code, per the vendor's own docs).
+ * 2026-10-28 against the v1.9.0 release — see provider.ts and
+ * ../endpoint.ts for the full story). Mirror carries optionality only
+ * (D25): the vendor normalizes common spellings of `stage`/`industry`
+ * server-side ("Pre-Seed" → `pre_seed`, "AI/ML" → `ai_ml`), so this
+ * stays a plain string rather than a fabricated closed enum — the real
+ * enum is not published. `country` is spelled out in full here (not an
+ * ISO code, per the vendor's own docs).
  *
  * `limit` — CHANGED 2026-10-24 ("safe default limit" fix): omitting it
  * now defaults to 10 for EVERY caller, including an agent paying on
@@ -21,8 +21,24 @@ import { z } from "zod";
  * agent-credits key up to 150 funds per key per UTC day in total
  * (across calls — not a per-call cap). Only a floor of 1 is enforced
  * client-side at the binding in endpoint.ts; everything above is the
- * vendor's own rejection. `z.looseObject`: vendor-forward keys ride
- * through.
+ * vendor's own rejection.
+ *
+ * NEWLY DOCUMENTED 2026-10-28, not a v1.9.0 change but a previously
+ * unrecorded tier boundary found while re-verifying live: a brand-new
+ * agent key — free credits granted, but with no completed real
+ * on-chain payment yet — is held to the SAME ceiling as a keyless
+ * caller, not the agent-credits ceiling described above: `limit` max
+ * 10/call (rejected above that, live-verified: "limit 15 is above the
+ * 10-result cap for callers without a paid account"), and `offset` is
+ * rejected outright ("offset is only available to paying callers
+ * (agent credits after a completed payment, Pro)"). The higher
+ * agent-credits ceiling (150/day, `offset` paging) only applies once
+ * that key has a completed payment on it.
+ *
+ * `max_credits` — ADDED in the v1.9.0 release (2026-10-28): an
+ * optional per-call spend ceiling, live-verified against the vendor.
+ * It only ever clamps `limit` DOWN (never raises it), so pass both
+ * freely. `z.looseObject`: vendor-forward keys ride through.
  */
 export const zFundmomentumSearchFundsArgs = z.looseObject({
     stage: z.string().describe(
@@ -51,13 +67,29 @@ export const zFundmomentumSearchFundsArgs = z.looseObject({
             "day's allowance). Free/keyless max 10/call, Starter max " +
             "50/call, Pro max 250/call (page with 'offset'), and " +
             "agent-credits callers are additionally capped at 150 " +
-            "funds per key per UTC day in total. A value above the " +
-            "caller's ceiling is rejected, not clamped. The response's " +
-            "`matched` and `truncated` say whether more exist.",
+            "funds per key per UTC day in total — but a brand-new " +
+            "agent key with no completed payment yet is held to the " +
+            "10/call keyless ceiling until it pays once. A value " +
+            "above the caller's ceiling is rejected, not clamped. The " +
+            "response's `matched` and `truncated` say whether more " +
+            "exist.",
     ).optional(),
     offset: z.number().int().nonnegative().describe(
         "Number of matches to skip, for paging a truncated result " +
             "(use `next_offset` from the previous response). Agent " +
-            "credits and Pro plans only; ignored on the free tier.",
+            "credits (after a completed payment) and Pro plans only " +
+            "— rejected outright on the free tier and on an agent key " +
+            "that has never completed a real payment.",
+    ).optional(),
+    max_credits: z.number().int().min(1).max(25).describe(
+        "Added in v1.9.0 (2026-10-28). Caps what this one call may " +
+            "spend: clamps `limit` DOWN to whatever this many credits " +
+            "affords, never up. Integer 1-25; values above 25 are " +
+            "silently clamped to 25 server-side, and 0, a negative " +
+            "number, or a non-integer are rejected before anything " +
+            "runs (`error_reason: 'invalid_args'`, nothing charged, " +
+            "live-verified). Only meaningful for agent-credits " +
+            "callers — ignored for Starter/Pro subscribers, who pay a " +
+            "flat fee regardless.",
     ).optional(),
 });

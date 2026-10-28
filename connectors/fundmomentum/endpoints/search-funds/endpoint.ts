@@ -35,6 +35,52 @@ import { zFundmomentumSearchFundsArgs } from "./schema/inputs.ts";
  * per-call ceilings (free/keyless 10, Starter 50, Pro 250 with
  * `offset` paging) — this is a vendor-side quota this connector does
  * not pre-enforce, same posture as every other tier ceiling here.
+ *
+ * RE-VERIFIED LIVE AGAIN 2026-10-28, against the v1.9.0 release (a
+ * fresh self-registered agent key, real calls, bodies captured
+ * verbatim — see fixtures/). Four real changes:
+ *   1. New optional `max_credits` (schema/inputs.ts) clamps `limit`
+ *      down to what it can afford, never up.
+ *   2. The vendor's own per-call receipt is now ALSO a documented,
+ *      public field in the payload itself — `billing: {credits_
+ *      charged, balance_after, next_page_cost, next_offset, payment_
+ *      mode, credits_unreturned}` — alongside the pre-existing
+ *      undocumented `_meta.credits_charged` this connector already
+ *      reads in provider.ts. Live-verified the two are always equal
+ *      for this endpoint, so provider.ts now prefers the documented
+ *      one when present and falls back to the old field otherwise.
+ *   3. **The empty-result 1-credit floor is GONE.** An empty match
+ *      now charges 0 (confirmed live: `credits_charged: 0`, balance
+ *      unchanged) — `usage.model.description` and the first `notes`
+ *      entry below said otherwise and were wrong as of this release;
+ *      both are corrected.
+ *   4. A genuinely new "balance-bound" case: when the balance covers
+ *      only PART of a requested page, the vendor silently shrinks
+ *      `limit`/`returned` to what's affordable (`truncated_reason:
+ *      "balance"`) and still charges for the reduced count, rather
+ *      than refusing outright — distinct from running out entirely,
+ *      which is a real HTTP 402 with `error_reason: "insufficient_
+ *      credits"` and `nothing_charged: true` (live-verified; this
+ *      connector's `lifecycle.start` in provider.ts already relays a
+ *      real non-2xx untouched, so this needed no code change there,
+ *      only the fixtures/tests to lock it in).
+ *
+ * Also newly documented 2026-10-28, found while re-verifying but NOT
+ * a v1.9.0 change: a brand-new agent key (free credits granted, no
+ * completed real payment yet) is held to the keyless ceiling, not the
+ * agent-credits one above — `limit` max 10/call, `offset` rejected
+ * outright — until it completes one real payment. See schema/
+ * inputs.ts for the live-verified wording.
+ *
+ * Also found live, unrelated to this release and NOT yet relied on
+ * anywhere in this connector: an exact repeat of a prior call's
+ * arguments is served from an idempotency cache for free (`_meta.
+ * idempotent_replay: true`, with the ORIGINAL call's now-stale
+ * billing numbers echoed back verbatim) rather than re-run and
+ * re-billed. provider.ts's `lifecycle.start` now zeroes the usage
+ * claim when this flag is set, so a repeated call never gets double-
+ * counted against the engine's own ledger even though the vendor
+ * itself charged nothing for it.
  */
 export default defineEndpoint({
     meta: {
@@ -55,12 +101,17 @@ export default defineEndpoint({
         docsUrl: "https://fundmomentum.vc/mcp",
         categories: ["funding-data"],
         notes: [
-            "Billed per fund returned, 1 credit (€0.01) each, minimum " +
-            "1 — not a flat per-call price. An empty result still " +
-            "costs the floor.",
+            "Billed per fund returned, 1 credit (€0.01) each — not a " +
+            "flat per-call price. An empty result costs nothing " +
+            "(the old 1-credit floor on a zero match was removed in " +
+            "the vendor's 2026-10-28 release).",
             "`limit` defaults to 10 if omitted, for every caller " +
             "(changed 2026-10-24). Agent-credits callers are also " +
-            "capped at 150 funds per key per UTC day in total.",
+            "capped at 150 funds per key per UTC day in total, and " +
+            "an optional `max_credits` (2026-10-28) can cap a single " +
+            "call's spend further. A brand-new agent key with no " +
+            "completed payment yet is held to the 10/call keyless " +
+            "ceiling instead, with `offset` rejected outright.",
         ],
     },
     endpoint: "/mcp/search_funds",
@@ -91,8 +142,10 @@ export default defineEndpoint({
             unit: Unit.RESULT,
             consumes: { credit: "default", amount: 1 },
             label: "funds returned",
-            description: "1 credit per fund in `results`, minimum 1 " +
-                "even on an empty match (the vendor's own floor).",
+            description: "1 credit per fund in `results`. An empty " +
+                "match costs nothing — the vendor removed its old " +
+                "1-credit floor on zero results in the 2026-10-28 " +
+                "release (live-verified).",
         },
         // The pre-run ceiling only: the real draw is rows actually
         // returned, settled from the vendor's receipt by the
@@ -102,18 +155,39 @@ export default defineEndpoint({
         // omitting it authorizes up to the vendor's free-tier default
         // of 10 per call, which is the safe floor to quote here since
         // the actual per-key/per-day ceiling cannot be known without a
-        // round trip.
-        estimate: ({ data }) => ({
-            counts: { RESULT: data.input.body?.limit ?? 10 },
-        }),
+        // round trip. `max_credits` (added 2026-10-28) only ever
+        // clamps `limit` DOWN, never up, so the tighter of the two is
+        // always a valid upper bound.
+        estimate: ({ data }) => {
+            const limit = data.input.body?.limit ?? 10;
+            const maxCredits = data.input.body?.max_credits;
+            return {
+                counts: {
+                    RESULT: typeof maxCredits === "number"
+                        ? Math.min(limit, maxCredits)
+                        : limit,
+                },
+            };
+        },
         // The settled fold when the provider's own usage.consolidate
         // claim is absent: count the funds actually in `results`
         // (never `matched`, which can run far ahead of what was
-        // returned and billed).
+        // returned and billed) — EXCEPT on an idempotent replay
+        // (provider.ts's lifecycle.start flags this in state), where
+        // real results still come back but the vendor charged nothing
+        // for them: zero the fold too, so this endpoint's own derived
+        // count can't re-introduce the double-bill that zeroing
+        // consolidate's claim alone cannot prevent (that claim, once
+        // zero, is pruned by the engine and falls back to exactly this
+        // fold).
         evidence: ({ data, utils }) => ({
             counts: {
-                RESULT: utils.json.optionalLen(data.output, "$.results") ??
-                    0,
+                RESULT: utils.json.optionalGet(
+                        data.lifecycle?.state ?? null,
+                        "$.data.idempotentReplay",
+                    ) === true
+                    ? 0
+                    : utils.json.optionalLen(data.output, "$.results") ?? 0,
             },
         }),
     },

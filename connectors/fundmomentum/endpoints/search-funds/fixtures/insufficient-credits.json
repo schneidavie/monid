@@ -1,0 +1,45 @@
+{
+    "name": "insufficient-credits",
+    "description": "Recorded 2026-10-28, new in the vendor's v1.9.0 release: a real agent key drained to a 0 balance (see fixtures/balance-bound.json for the prior call that reached 0), then asked for 5 more funds. Unlike the balance-bound case (balance partially covers the page), a ZERO balance refuses outright: a real HTTP 402 — this connector's non-MCP-transport posture (plain JSON over HTTP, no SSE Accept header) gets the real transport status rather than an isError:true MCP result, per the vendor's own isMcpTransport split. error_reason 'insufficient_credits', nothing_charged true. The provider's lifecycle.start already relays any non-2xx untouched (its very first branch), so no code change was needed for this case — only this fixture and test to lock it in. Verbatim, no trimming needed.",
+    "calls": [{
+        "req": {
+            "method": "POST",
+            "url": "{{request.url}}",
+            "body": {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {
+                    "name": "search_funds",
+                    "arguments": {
+                        "stage": "seed",
+                        "industry": "fintech",
+                        "limit": 5
+                    }
+                },
+                "id": 1
+            }
+        },
+        "res": {
+            "status": 402,
+            "body": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {
+                    "code": -32001,
+                    "message": "Insufficient credits. You have 0 credits. This operation requires 5 credits. Short by 5. Top up: https://fundmomentum.vc/pricing. Nothing was charged.",
+                    "data": {
+                        "error_reason": "insufficient_credits",
+                        "required": 5,
+                        "available": 0,
+                        "shortfall": 5,
+                        "top_up": {
+                            "url": "https://fundmomentum.vc/pricing",
+                            "tool": null
+                        },
+                        "nothing_charged": true
+                    }
+                }
+            }
+        }
+    }]
+}
